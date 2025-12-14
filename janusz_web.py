@@ -1,8 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-from gtts import gTTS
-import io
 import os
 import datetime
 import gspread
@@ -18,7 +16,7 @@ st.title("🌍 Janusz: Księgowość Globalna")
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    API_KEY = "TU_WPISZ_KLUCZ_JEŚLI_TESTUJESZ_LOKALNIE_BEZ_SEKRETOW"
+    API_KEY = "TU_WPISZ_KLUCZ_LOKALNY_JESLI_TRZEBA"
 
 genai.configure(api_key=API_KEY)
 
@@ -30,7 +28,7 @@ def get_janusz_response(user_input, attachment=None):
         system_instruction="""
         Jesteś Januszem, starszym księgowym.
         1. Analizuj dokumenty i wyciągaj: Datę, Sprzedawcę, Kwotę Brutto.
-        2. Bądź marudny.
+        2. Bądź marudny, ale krótko i na temat.
         3. Na końcu ZAWSZE napisz w nowej linii: "KWOTA: [liczba]".
         """
     )
@@ -40,28 +38,29 @@ def get_janusz_response(user_input, attachment=None):
     response = model.generate_content(content)
     return response.text
 
-def text_to_speech(text):
-    try:
-        tts = gTTS(text=text, lang='pl')
-        audio_fp = io.BytesIO()
-        tts.write_to_fp(audio_fp)
-        audio_fp.seek(0)
-        return audio_fp
-    except:
-        return None
-
-# --- HYBRYDOWA FUNKCJA LOGOWANIA DO GOOGLE ---
+# --- NOWA, PANCERNA FUNKCJA LOGOWANIA ---
 def get_google_creds():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     
-    # Opcja 1: Chmura (Sekrety)
+    # Sytuacja A: Jesteśmy w chmurze (Streamlit Cloud)
     if "GOOGLE_CREDENTIALS" in st.secrets:
-        secret_json = st.secrets["GOOGLE_CREDENTIALS"]
-        # Parsujemy string z sekretów z powrotem na słownik (JSON object)
-        creds_dict = json.loads(secret_json)
-        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        try:
+            # Pobieramy treść z sekretów
+            secret_value = st.secrets["GOOGLE_CREDENTIALS"]
+            
+            # Jeśli user wkleił to jako string (w cudzysłowach), parsujemy JSON
+            if isinstance(secret_value, str):
+                creds_dict = json.loads(secret_value)
+            else:
+                # Czasami Streamlit sam parsuje TOML na dict
+                creds_dict = secret_value
+                
+            return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        except Exception as e:
+            st.error(f"Błąd parsowania sekretów w chmurze: {e}")
+            return None
     
-    # Opcja 2: Lokalny plik (Komputer Mariusza)
+    # Sytuacja B: Jesteśmy na komputerze (Lokalnie)
     elif os.path.exists("credentials.json"):
         return Credentials.from_service_account_file("credentials.json", scopes=scopes)
     
@@ -72,12 +71,12 @@ def save_to_google_sheets(pytanie, odpowiedz, kwota_str):
         credentials = get_google_creds()
         
         if not credentials:
-            st.error("❌ Brak kluczy do Google (nie znaleziono ani sekretów, ani pliku json).")
+            st.error("❌ Błąd: Nie znaleziono kluczy do Google (ani w pliku, ani w sekretach).")
             return False
 
         client = gspread.authorize(credentials)
         
-        # Pamiętaj o wielkości liter w nazwie arkusza! ;)
+        # Otwieranie arkusza
         sheet = client.open("Wydatki Janusza").sheet1
         
         data_teraz = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -85,7 +84,7 @@ def save_to_google_sheets(pytanie, odpowiedz, kwota_str):
         return True
 
     except Exception as e:
-        st.error(f"Błąd zapisu: {e}")
+        st.error(f"Błąd zapisu do Google: {e}")
         return False
 
 # ================= INTERFEJS =================
@@ -116,29 +115,28 @@ if run_btn or (audio_data and not st.session_state.get('audio_processed')):
     if audio_data: st.session_state['audio_processed'] = True
     
     if user_prompt or uploaded_image or audio_data:
-        with st.spinner("Przetwarzanie..."):
+        with st.spinner("Janusz pracuje..."):
             gemini_att = uploaded_image if uploaded_image else ({"mime_type": "audio/wav", "data": audio_data.read()} if audio_data else None)
             
             try:
-                # AI
+                # 1. Analiza AI
                 resp = get_janusz_response(user_prompt, gemini_att)
                 st.success("Janusz:")
                 st.write(resp)
                 
-                # Audio
-                audio = text_to_speech(resp)
-                if audio: st.audio(audio, format='audio/mp3', autoplay=True)
+                # (Usunięto sekcję Audio/TTS)
                 
-                # Zapis
+                # 2. Wyciąganie Kwoty
                 kwota = "0.00"
                 match = re.search(r"KWOTA:\s*([\d\.,]+)", resp)
                 if match: kwota = match.group(1).replace(",", ".")
                 
+                # 3. Zapis do Chmury
                 if kwota != "0.00" or "zapisz" in user_prompt.lower():
                     if save_to_google_sheets(user_prompt, resp, kwota):
-                        st.toast("✅ Zapisano w Chmurze!", icon="🌍")
+                        st.toast("✅ Zapisano w Arkuszu!", icon="☁️")
                         
             except Exception as e:
-                st.error(f"Błąd: {e}")
+                st.error(f"Błąd aplikacji: {e}")
 
 if not audio_data: st.session_state['audio_processed'] = False
