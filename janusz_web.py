@@ -33,7 +33,7 @@ except Exception as e:
 def get_janusz_response(user_input, attachment=None):
     try:
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash-latest", 
+            model_name="gemini-1.5-flash", 
             system_instruction="""
             Jesteś Januszem, księgowym.
             Analizuj dokumenty: Data, Sprzedawca, Kwota Brutto.
@@ -148,6 +148,7 @@ if run_btn:
                 if save_to_google_sheets(user_prompt, resp, kwota):
                     st.toast("✅ Zapisano w Arkuszu Google!", icon="📂")
                     st.balloons()
+
 
 
 
