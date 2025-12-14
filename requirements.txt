@@ -2,3 +2,5 @@ streamlit
 google-generativeai
 Pillow
 gTTS
+gspread
+google-auth
