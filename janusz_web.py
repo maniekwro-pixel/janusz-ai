@@ -33,7 +33,7 @@ def get_janusz_response(user_input, attachment=None):
     try:
         # 👇 TUTAJ JEST ZMIANA! Używamy Twojego najnowszego modelu
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash", 
+            model_name="gemini-3-pro", 
             system_instruction="""
             Jesteś Januszem, księgowym.
             Analizuj dokumenty: Data, Sprzedawca, Kwota Brutto.
@@ -137,3 +137,4 @@ if run_btn:
                 
                 if save_to_google_sheets(user_prompt, resp, kwota):
                     st.toast("✅ Zapisano w Arkuszu!", icon="🔥")
+
