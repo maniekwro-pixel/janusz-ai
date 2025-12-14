@@ -8,106 +8,97 @@ from google.oauth2.service_account import Credentials
 import re
 import json
 
-# ================= KONFIGURACJA =================
-st.set_page_config(page_title="Janusz Pancerny", page_icon="🛡️")
-st.title("🛡️ Janusz: Wersja Ostateczna")
+st.set_page_config(page_title="Janusz Detektyw", page_icon="🕵️‍♂️")
+st.title("🕵️‍♂️ Janusz: Tryb Diagnostyczny")
 
-# 1. Konfiguracja GEMINI (AI)
-# Kod szuka klucza niezależnie od tego, gdzie go wkleiłeś w sekretach
-try:
-    API_KEY = st.secrets.get("GEMINI_API_KEY", None)
-    if not API_KEY:
-        # Fallback: Może jest w sekcji gcp przez przypadek?
-        if "gcp_service_account" in st.secrets and "GEMINI_API_KEY" in st.secrets["gcp_service_account"]:
-             API_KEY = st.secrets["gcp_service_account"]["GEMINI_API_KEY"]
-             
-    if not API_KEY:
-        API_KEY = "BRAK_KLUCZA_LOKALNIE" 
+# ================= SEKJA SZPIEGOWSKA (DIAGNOSTYKA) =================
+st.info("🔍 ROZPOCZYNAM ANALIZĘ SEKRETÓW...")
 
-    genai.configure(api_key=API_KEY)
-except Exception as e:
-    st.error(f"Błąd konfiguracji AI: {e}")
+# 1. Sprawdzamy co w ogóle jest w sekretach (tylko nazwy kluczy, bez haseł)
+dostepne_klucze = list(st.secrets.keys())
+st.write(f"📂 Dostępne sekcje w st.secrets: `{dostepne_klucze}`")
 
-# ================= FUNKCJE LOGICZNE =================
+# 2. Szukamy klucza Gemini
+if "GEMINI_API_KEY" in st.secrets:
+    st.write("✅ GEMINI_API_KEY: Znaleziony")
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+elif "gcp_service_account" in st.secrets and "GEMINI_API_KEY" in st.secrets["gcp_service_account"]:
+    st.write("⚠️ GEMINI_API_KEY: Znaleziony, ale ukryty wewnątrz sekcji gcp (przesuń go wyżej!)")
+    API_KEY = st.secrets["gcp_service_account"]["GEMINI_API_KEY"]
+else:
+    st.error("❌ GEMINI_API_KEY: BRAK! (Janusz jest ślepy)")
+    API_KEY = None
+
+if API_KEY: genai.configure(api_key=API_KEY)
+
+# 3. Szukamy kluczy Google (Szczegółowo)
+st.write("---")
+st.write("🔑 Analiza kluczy Google:")
+
+found_creds = None
+scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+# Test formatu TOML [gcp_service_account]
+if "gcp_service_account" in st.secrets:
+    st.write("Found section '[gcp_service_account]' - Sprawdzam wnętrze...")
+    sekcja = st.secrets["gcp_service_account"]
+    st.write(f"Klucze w środku: `{list(sekcja.keys())}`")
+    
+    if "private_key" in sekcja:
+        pk = sekcja["private_key"]
+        st.write(f"Private Key start: `{pk[:15]}...`")
+        if "\\n" in pk:
+            st.warning("⚠️ Wykryto 'sztywne' znaki \\n w kluczu. Próbuję naprawić...")
+            pk_fixed = pk.replace("\\n", "\n")
+            sekcja_fixed = dict(sekcja)
+            sekcja_fixed["private_key"] = pk_fixed
+            try:
+                found_creds = Credentials.from_service_account_info(sekcja_fixed, scopes=scopes)
+                st.success("✅ Udało się utworzyć poświadczenia z TOML!")
+            except Exception as e:
+                st.error(f"❌ Błąd tworzenia poświadczeń: {e}")
+        else:
+            # Próba bez naprawiania
+            try:
+                found_creds = Credentials.from_service_account_info(sekcja, scopes=scopes)
+                st.success("✅ Udało się utworzyć poświadczenia z TOML (bez zmian)!")
+            except Exception as e:
+                st.error(f"❌ Błąd: {e}")
+    else:
+        st.error("❌ Sekcja gcp_service_account istnieje, ale brakuje w niej 'private_key'!")
+
+# ================= KONIEC DIAGNOSTYKI =================
 
 def get_janusz_response(user_input, attachment=None):
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-flash-latest",
-            system_instruction="""
-            Jesteś Januszem, księgowym.
-            Analizuj dokumenty: Data, Sprzedawca, Kwota Brutto.
-            Na końcu napisz w nowej linii: "KWOTA: [liczba]".
-            """
-        )
+        model = genai.GenerativeModel("gemini-flash-latest")
         content = [user_input]
-        if attachment:
-            content.append(attachment)
+        if attachment: content.append(attachment)
         response = model.generate_content(content)
         return response.text
     except Exception as e:
-        return f"Błąd AI: {str(e)}"
-
-# --- PANCERNA FUNKCJA LOGOWANIA (OBSŁUGUJE WSZYSTKO) ---
-def get_google_creds():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    
-    # OPCJA 1: Nowy format TOML [gcp_service_account]
-    if "gcp_service_account" in st.secrets:
-        try:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            # Autonaprawa enterów w kluczu prywatnym
-            if "private_key" in creds_dict and "\\n" in creds_dict["private_key"]:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            return Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        except Exception:
-            pass # Jak nie zadziała, idziemy dalej
-
-    # OPCJA 2: Stary format JSON string (GOOGLE_CREDENTIALS)
-    if "GOOGLE_CREDENTIALS" in st.secrets:
-        try:
-            secret_value = st.secrets["GOOGLE_CREDENTIALS"]
-            if isinstance(secret_value, str):
-                creds_dict = json.loads(secret_value)
-            else:
-                creds_dict = secret_value
-            return Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        except Exception:
-            pass
-
-    # OPCJA 3: Plik lokalny (Komputer)
-    if os.path.exists("credentials.json"):
-        return Credentials.from_service_account_file("credentials.json", scopes=scopes)
-    
-    return None
+        return f"Błąd AI: {e}"
 
 def save_to_google_sheets(pytanie, odpowiedz, kwota_str):
+    if not found_creds:
+        st.error("⛔ Nie mogę zapisać - brak poświadczeń (patrz raport wyżej).")
+        return False
     try:
-        credentials = get_google_creds()
-        
-        if not credentials:
-            st.error("❌ KRYTYCZNY BŁĄD: Janusz nie widzi kluczy w sekretach! Sprawdź czy zaktualizowałeś plik .py na GitHubie.")
-            return False
-
-        client = gspread.authorize(credentials)
+        client = gspread.authorize(found_creds)
         sheet = client.open("Wydatki Janusza").sheet1
-        
         data_teraz = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         sheet.append_row([data_teraz, pytanie, odpowiedz, kwota_str])
         return True
-
     except Exception as e:
-        st.error(f"Błąd zapisu do Excela: {e}")
+        st.error(f"Błąd zapisu: {e}")
         return False
 
-# ================= INTERFEJS =================
-
+# INTERFEJS
+st.divider()
 with st.sidebar:
-    st.header("📂 Źródło")
     input_method = st.radio("Metoda:", ["Wgraj plik", "Aparat"])
 
 uploaded_image = None
-
 if input_method == "Wgraj plik":
     f = st.file_uploader("Plik", type=["jpg", "png", "pdf"])
     if f: uploaded_image = Image.open(f)
@@ -115,28 +106,13 @@ elif input_method == "Aparat":
     f = st.camera_input("Foto")
     if f: uploaded_image = Image.open(f)
 
-st.divider()
 user_prompt = st.text_area("Polecenie:", value="Rozlicz to.")
-run_btn = st.button("🚀 Wyślij")
-
-if run_btn:
-    if not uploaded_image and len(user_prompt) < 2:
-        st.warning("Pusto tu!")
-    else:
-        with st.spinner("Janusz myśli..."):
-            # 1. AI
-            gemini_att = uploaded_image if uploaded_image else None
-            resp = get_janusz_response(user_prompt, gemini_att)
-            
-            st.success("Janusz:")
-            st.write(resp)
-            
-            # 2. Wyciąganie kwoty
-            kwota = "0.00"
+if st.button("🚀 Wyślij"):
+    if uploaded_image or user_prompt:
+        resp = get_janusz_response(user_prompt, uploaded_image)
+        st.write(resp)
+        if "KWOTA:" in resp:
             match = re.search(r"KWOTA:\s*([\d\.,]+)", resp)
-            if match: kwota = match.group(1).replace(",", ".")
-            
-            # 3. Zapis
-            if "Błąd AI" not in resp:
-                if save_to_google_sheets(user_prompt, resp, kwota):
-                    st.toast("✅ Zapisano w Arkuszu!", icon="🎉")
+            kwota = match.group(1).replace(",", ".") if match else "0.00"
+            if save_to_google_sheets(user_prompt, resp, kwota):
+                st.toast("Zapisano!", icon="✅")
