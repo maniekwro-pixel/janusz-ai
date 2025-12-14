@@ -3,43 +3,40 @@ import google.generativeai as genai
 from PIL import Image
 from gtts import gTTS
 import io
-import csv
 import os
+import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 import re
+import json
 
-# ================= KONFIGURACJA CHMUROWA =================
-st.set_page_config(page_title="Janusz w Chmurze", page_icon="☁️")
-st.title("☁️ Janusz: Globalny Maruda")
+# ================= KONFIGURACJA =================
+st.set_page_config(page_title="Janusz Global", page_icon="🌍")
+st.title("🌍 Janusz: Księgowość Globalna")
 
-# Tutaj dzieje się magia bezpieczeństwa.
-# Kod szuka klucza w "sejfu" serwera (st.secrets), a nie w pliku.
+# 1. Konfiguracja GEMINI (AI)
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
-except FileNotFoundError:
-    st.warning("⚠️ Uruchamiasz to lokalnie i nie masz pliku .streamlit/secrets.toml? Spokojnie, w chmurze zadziała, jeśli wpiszesz klucz w ustawieniach.")
-    st.stop()
-except KeyError:
-    st.error("❌ Błąd konfiguracji: Nie znaleziono klucza 'GEMINI_API_KEY' w sekretach.")
-    st.stop()
+except:
+    API_KEY = "TU_WPISZ_KLUCZ_JEŚLI_TESTUJESZ_LOKALNIE_BEZ_SEKRETOW"
 
 genai.configure(api_key=API_KEY)
-# =========================================================
+
+# ================= FUNKCJE LOGICZNE =================
 
 def get_janusz_response(user_input, attachment=None):
     model = genai.GenerativeModel(
         model_name="gemini-flash-latest",
         system_instruction="""
-        Jesteś Januszem. Działasz teraz w chmurze, więc czujesz się ważny, ale dalej marudzisz.
-        1. Odpowiedzi mają być krótkie i konkretne (do czytania na telefonie).
-        2. Jeśli dostaniesz zdjęcie dokumentu, wyciągnij kwotę i datę.
-        3. Jeśli dostaniesz nagranie, streść polecenie.
+        Jesteś Januszem, starszym księgowym.
+        1. Analizuj dokumenty i wyciągaj: Datę, Sprzedawcę, Kwotę Brutto.
+        2. Bądź marudny.
+        3. Na końcu ZAWSZE napisz w nowej linii: "KWOTA: [liczba]".
         """
     )
-    
     content = [user_input]
     if attachment:
         content.append(attachment)
-        
     response = model.generate_content(content)
     return response.text
 
@@ -50,73 +47,98 @@ def text_to_speech(text):
         tts.write_to_fp(audio_fp)
         audio_fp.seek(0)
         return audio_fp
-    except Exception as e:
+    except:
         return None
 
-# --- INTERFEJS ---
+# --- HYBRYDOWA FUNKCJA LOGOWANIA DO GOOGLE ---
+def get_google_creds():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    
+    # Opcja 1: Chmura (Sekrety)
+    if "GOOGLE_CREDENTIALS" in st.secrets:
+        secret_json = st.secrets["GOOGLE_CREDENTIALS"]
+        # Parsujemy string z sekretów z powrotem na słownik (JSON object)
+        creds_dict = json.loads(secret_json)
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    
+    # Opcja 2: Lokalny plik (Komputer Mariusza)
+    elif os.path.exists("credentials.json"):
+        return Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    
+    return None
+
+def save_to_google_sheets(pytanie, odpowiedz, kwota_str):
+    try:
+        credentials = get_google_creds()
+        
+        if not credentials:
+            st.error("❌ Brak kluczy do Google (nie znaleziono ani sekretów, ani pliku json).")
+            return False
+
+        client = gspread.authorize(credentials)
+        
+        # Pamiętaj o wielkości liter w nazwie arkusza! ;)
+        sheet = client.open("Wydatki Janusza").sheet1
+        
+        data_teraz = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        sheet.append_row([data_teraz, pytanie, odpowiedz, kwota_str])
+        return True
+
+    except Exception as e:
+        st.error(f"Błąd zapisu: {e}")
+        return False
+
+# ================= INTERFEJS =================
 
 with st.sidebar:
-    st.header("⚙️ Narzędzia")
-    input_method = st.radio("Tryb pracy:", ["Aparat (Zdjęcie)", "Mikrofon (Głos)"])
+    st.header("📂 Źródło danych")
+    input_method = st.radio("Metoda:", ["Wgraj plik", "Aparat", "Mikrofon"])
 
 uploaded_image = None
-audio_input = None
-user_prompt = ""
+audio_data = None
 
-# --- WEJŚCIE DANYCH ---
-
-if input_method == "Aparat (Zdjęcie)":
-    img_file = st.camera_input("Zrób zdjęcie")
-    if img_file:
-        uploaded_image = Image.open(img_file)
-
-elif input_method == "Mikrofon (Głos)":
-    audio_input = st.audio_input("Nagraj polecenie")
-
-# --- URUCHOMIENIE ---
-
-if uploaded_image:
-    user_prompt = st.text_input("Co mam z tym zrobić?", value="Rozlicz to.")
-
-if audio_input:
-    user_prompt = "Odsłuchaj i wykonaj polecenie."
-
-# Logika przycisku / startu
-start_button = st.button("🚀 Wyślij do Janusza")
-
-# Warunek startu: Kliknięto przycisk LUB nagrano audio (i jeszcze go nie przetworzono)
-if start_button or (audio_input and not st.session_state.get('audio_processed')):
+if input_method == "Wgraj plik":
+    f = st.file_uploader("Plik", type=["jpg", "png", "pdf"])
+    if f: uploaded_image = Image.open(f)
     
-    if audio_input:
-        st.session_state['audio_processed'] = True
+elif input_method == "Aparat":
+    f = st.camera_input("Foto")
+    if f: uploaded_image = Image.open(f)
+    
+elif input_method == "Mikrofon":
+    audio_data = st.audio_input("Głos")
 
-    with st.spinner("Łączę z chmurą..."):
-        try:
-            gemini_attachment = None
-            if uploaded_image:
-                gemini_attachment = uploaded_image
-            elif audio_input:
-                gemini_attachment = {"mime_type": "audio/wav", "data": audio_input.read()}
+st.divider()
+user_prompt = st.text_area("Polecenie:", value="Rozlicz to." if (uploaded_image or audio_data) else "")
+run_btn = st.button("🚀 Wyślij", type="primary")
 
-            response_text = get_janusz_response(user_prompt, gemini_attachment)
+if run_btn or (audio_data and not st.session_state.get('audio_processed')):
+    if audio_data: st.session_state['audio_processed'] = True
+    
+    if user_prompt or uploaded_image or audio_data:
+        with st.spinner("Przetwarzanie..."):
+            gemini_att = uploaded_image if uploaded_image else ({"mime_type": "audio/wav", "data": audio_data.read()} if audio_data else None)
+            
+            try:
+                # AI
+                resp = get_janusz_response(user_prompt, gemini_att)
+                st.success("Janusz:")
+                st.write(resp)
+                
+                # Audio
+                audio = text_to_speech(resp)
+                if audio: st.audio(audio, format='audio/mp3', autoplay=True)
+                
+                # Zapis
+                kwota = "0.00"
+                match = re.search(r"KWOTA:\s*([\d\.,]+)", resp)
+                if match: kwota = match.group(1).replace(",", ".")
+                
+                if kwota != "0.00" or "zapisz" in user_prompt.lower():
+                    if save_to_google_sheets(user_prompt, resp, kwota):
+                        st.toast("✅ Zapisano w Chmurze!", icon="🌍")
+                        
+            except Exception as e:
+                st.error(f"Błąd: {e}")
 
-            st.success("Janusz mówi:")
-            st.write(response_text)
-
-            audio_response = text_to_speech(response_text)
-            if audio_response:
-                st.audio(audio_response, format='audio/mp3', autoplay=True)
-
-            # UWAGA: W chmurze pliki CSV są tymczasowe (znikają po restarcie apki)
-            # Ale zostawiamy to, żebyś widział, że mechanizm działa.
-            if "PLN" in response_text or "zł" in response_text:
-                with open("wydatki_temp.csv", "a", encoding="utf-8", newline="") as f:
-                    writer = csv.writer(f, delimiter=';')
-                    writer.writerow([user_prompt, response_text])
-                st.info("ℹ️ Zapisano w pliku tymczasowym na serwerze.")
-
-        except Exception as e:
-            st.error(f"Błąd: {e}")
-
-if not audio_input:
-    st.session_state['audio_processed'] = False
+if not audio_data: st.session_state['audio_processed'] = False
